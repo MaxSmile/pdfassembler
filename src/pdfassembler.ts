@@ -1,3 +1,4 @@
+import { calculateMD5 } from 'pdfjs-dist/lib/core/crypto';
 import { PDFDocument } from 'pdfjs-dist/lib/core/document';
 // import { Jbig2Stream } from 'pdfjs-dist/lib/core/jbig2_stream';
 // import { JpegStream } from 'pdfjs-dist/lib/core/jpeg_stream';
@@ -549,8 +550,13 @@ export class PDFAssembler {
         return prefix + pdfObject;
       };
       const rootRef = newPdfObject(this.pdfTree['/Root'], 0, false);
-      const infoRef = this.pdfTree['/Info'] && Object.keys(this.pdfTree['/Info']).length ?
-        newPdfObject(this.pdfTree['/Info'], 0, false) : null;
+      const infoElement = this.pdfTree['/Info'];
+      if (infoElement) {
+         infoElement.gen = 0;
+         infoElement.num = this.nextNodeNum++;
+      }
+      const infoRef = infoElement && Object.keys(infoElement).length ?
+        newPdfObject(infoElement, 0, false) : null;
       const header =
         `%PDF-${this.pdfVersion}\n` + // default: 1.7
         `%âãÏÓ\n`;
@@ -564,10 +570,18 @@ export class PDFAssembler {
           .map(o => (`0000000000${offset += o.length} 00000 n \n`).slice(-20))
           .slice(0, -1)
           .join('');
+
+      let metadata = {"/Timestamp": Date.now(), "/Info": infoElement || {}}
+      let pdfMetadata = JSON.stringify(metadata).split("");
+      let newHash = uintArrayToHexString(calculateMD5(pdfMetadata, 0, pdfMetadata.length));
+      let currentIdArray = (this.pdfManager && this.pdfManager.pdfDocument.xref.trailer.get("ID")) || null;
+      let initialHash = Array.isArray(currentIdArray) && uintArrayToHexString(stringToBytes(currentIdArray[0])) || newHash;
+      let idArray = [initialHash, newHash];
       const trailer =
         `trailer\n` +
         `<<${newline}` +
           `${space}/Root ${rootRef}${newline}` +
+          `${space}/ID[<${idArray[0]}><${idArray[1]}>]${newline}` +
           (infoRef ? `${space}/Info ${infoRef}${newline}` : '') +
           `${space}/Size ${indirectObjects.length}${newline}` +
         `>>\n` +
