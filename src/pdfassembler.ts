@@ -144,7 +144,7 @@ export class PDFAssembler {
   }
 
   resolveNodeRefs(
-    node = this.pdfManager.pdfDocument.catalog.catDict, name?, parent?, contents = false
+    node = this.pdfManager.pdfDocument.catalog._catDict, name?, parent?, contents = false
   ) {
     if (node instanceof Ref) {
       const refKey = `${node.num}-${node.gen}`;
@@ -251,7 +251,7 @@ export class PDFAssembler {
         }
         delete objectNode['/Length'];
       }
-      if (node === this.pdfManager.pdfDocument.catalog.catDict) {
+      if (node === this.pdfManager.pdfDocument.catalog._catDict) {
         const catKey = node.objId.slice(0, -1) + '-0';
         this.objCache[catKey] = Object.assign(objectNode, { num: this.nextNodeNum++, gen: 0 });
       }
