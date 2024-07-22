@@ -20,6 +20,25 @@ import { arraysToBytes, bytesToString, stringToBytes } from 'pdfjs-dist/lib/shar
 import { deflate } from 'pako';
 import * as queue from 'promise-queue';
 
+const globalObject = (function getGlobalObject () {
+  if (typeof globalThis !== "undefined") { return globalThis; }
+  if (typeof self !== "undefined") { return self; }
+  if (typeof window !== "undefined") { return window; }
+  if (typeof global !== "undefined") { return global; }
+  throw new Error("Unable to determine global object");
+})();
+
+const Blob = globalObject.Blob || class Blob {
+   constructor (blobParts, options) {
+      throw new Error("Constructor for Blob stub has been invoked");
+   }
+};
+const File = globalObject.File || class File {
+   constructor (fileBits, fileName, options) {
+      throw new Error("Constructor for File stub has been invoked")
+   }
+};
+
 function uintArrayToHexString (arr: Uint8Array | Uint16Array | Uint32Array) {
    let hexValues = Array.from(arr, value => value.toString(16).padStart(2, "0"));
    return hexValues.join("").toUpperCase();
@@ -29,6 +48,41 @@ export type TypedArray = Int8Array | Uint8Array | Int16Array | Uint16Array |
   Int32Array | Uint32Array | Uint8ClampedArray | Float32Array | Float64Array;
 
 export type BinaryFile = Blob | File | ArrayBuffer | TypedArray;
+
+async function blobToUint8Array (blob: Blob): Promise<Uint8Array> {
+   return new Promise((resolve, reject) => {
+      const fileReader = new FileReader();
+      fileReader.onload = () => resolve(new Uint8Array(fileReader.result as ArrayBuffer));
+      fileReader.onerror = () => reject(fileReader.error);
+      fileReader.readAsArrayBuffer(blob as Blob);
+    })
+}
+
+async function typedArrayToUint8Array (typedArr) {
+   return Promise.resolve(Uint8Array.from(typedArr));
+}
+
+/*
+const demoPdfObject = {
+   'documentInfo': {},
+   '/Root': {
+     '/Type': '/Catalog',
+     '/Pages': {
+       '/Type': '/Pages',
+       '/Count': 1,
+       '/Kids': [ {
+         '/Type': '/Page',
+         '/MediaBox': [ 0, 0, 612, 792 ], // 8.5" x 11"
+         '/Contents': [],
+         '/Resources': {},
+         // To make a "hello world" pdf, replace the above two lines with:
+         // '/Contents': [ { 'stream': '1 0 0 1 72 708 cm BT /Helv 12 Tf (Hello world!) Tj ET' } ],
+         // '/Resources': { '/Font': { '/Helv': { '/Type': '/Font', '/Subtype': '/Type1', '/BaseFont': '/Helvetica' } } },
+       } ],
+     }
+   }
+}
+// */
 
 export class PDFAssembler {
   pdfManager: PDFManager = null;
@@ -49,59 +103,47 @@ export class PDFAssembler {
   pageGroupSize = 16;
   pdfVersion = '1.7';
 
-  constructor(inputData?: BinaryFile|Object, userPassword = '') {
+  constructor() {}
+
+  loadPDF(inputData?: BinaryFile|Object, userPassword = ''): Promise<void>  {
+
+    if (!inputData) { return Promise.reject(new Error("loadPDF: Invalid parameters")); }
+
     if (userPassword.length) { this.userPassword = userPassword; }
-    if (typeof inputData === 'object') {
-      if (inputData instanceof Blob || inputData instanceof ArrayBuffer || inputData instanceof Uint8Array) {
-        this.promiseQueue.add(() => this.toArrayBuffer(inputData)
-          .then(arrayBuffer => this.pdfManager = new LocalPdfManager(1, arrayBuffer, userPassword, {}, ''))
-          .then(() => this.pdfManager.ensureDoc('checkHeader', []))
-          .then(() => this.pdfManager.ensureDoc('parseStartXRef', []))
-          .then(() => this.pdfManager.ensureDoc('parse', [this.recoveryMode]))
-          .then(() => this.pdfManager.ensureDoc('numPages'))
-          .then(() => this.pdfManager.ensureDoc('fingerprint'))
-          .then(() => {
-            this.pdfTree['/Root'] = this.resolveNodeRefs();
-            const infoDict = new Dict();
-            infoDict._map = this.pdfManager.pdfDocument.documentInfo;
-            this.pdfTree['/Info'] = this.resolveNodeRefs(infoDict) || {};
-            delete this.pdfTree['/Info']['/IsAcroFormPresent'];
-            delete this.pdfTree['/Info']['/IsXFAPresent'];
-            delete this.pdfTree['/Info']['/PDFFormatVersion'];
-            this.pdfTree['/Info']['/Producer'] = '(PDF Assembler)';
-            this.pdfTree['/Info']['/ModDate'] = '(' + this.toPdfDate() + ')';
-            this.flattenPageTree();
-          })
-        );
-      } else {
-        this.pdfTree = inputData;
-      }
-    } else {
-      this.pdfTree = {
-        'documentInfo': {},
-        '/Info': {
-          '/Producer': '(PDF Assembler)',
-          '/CreationDate': '(' + this.toPdfDate() + ')',
-          '/ModDate': '(' + this.toPdfDate() + ')',
-        },
-        '/Root': {
-          '/Type': '/Catalog',
-          '/Pages': {
-            '/Type': '/Pages',
-            '/Count': 1,
-            '/Kids': [ {
-              '/Type': '/Page',
-              '/MediaBox': [ 0, 0, 612, 792 ], // 8.5" x 11"
-              '/Contents': [],
-              '/Resources': {},
-              // To make a "hello world" pdf, replace the above two lines with:
-              // '/Contents': [ { 'stream': '1 0 0 1 72 708 cm BT /Helv 12 Tf (Hello world!) Tj ET' } ],
-              // '/Resources': { '/Font': { '/Helv': { '/Type': '/Font', '/Subtype': '/Type1', '/BaseFont': '/Helvetica' } } },
-            } ],
-          }
-        },
-      };
+
+    // Caller supplied structure as an object.
+    if (!(inputData instanceof Blob || inputData instanceof ArrayBuffer || inputData instanceof Uint8Array)) {
+      this.pdfTree = inputData;
+      return Promise.resolve();
     }
+
+    // Otherwise, get the data into a usable format and use PDF.js to parse it.
+    let handlePDF = async (inputData) => {
+      // The ArrayBuffer backing for Buffer on Node.js can actually contain more data than expected
+      // (see https://nodejs.org/api/buffer.html#buffer_buf_byteoffset), so using this is not advisable.
+      // Although the PDF.js interfaces make reference to arrayBuffer, it actually converts to Uint8, so
+      // so it seems sensible to use Uint8 instead.
+      let uintArray = await this.toUint8Array(inputData as Blob | ArrayBuffer | Uint8Array);
+      this.pdfManager = new LocalPdfManager(1, uintArray, userPassword, {}, '');
+      await this.pdfManager.ensureDoc('checkHeader', []);
+      await this.pdfManager.ensureDoc('parseStartXRef', []);
+      await this.pdfManager.ensureDoc('parse', [this.recoveryMode]);
+      await this.pdfManager.ensureDoc('numPages');
+      await this.pdfManager.ensureDoc('fingerprint');
+      this.pdfTree['/Root'] = this.resolveNodeRefs();
+      const infoDict = new Dict();
+      infoDict._map = this.pdfManager.pdfDocument.documentInfo;
+      this.pdfTree['/Info'] = this.resolveNodeRefs(infoDict) || {};
+      delete this.pdfTree['/Info']['/IsAcroFormPresent'];
+      delete this.pdfTree['/Info']['/IsXFAPresent'];
+      delete this.pdfTree['/Info']['/PDFFormatVersion'];
+      this.pdfTree['/Info']['/Producer'] = '(PDF Assembler)';
+      this.pdfTree['/Info']['/ModDate'] = '(' + this.toPdfDate() + ')';
+      this.flattenPageTree();
+    }
+
+    return this.promiseQueue.add(() => handlePDF(inputData));
+
   }
 
   get pdfDocument(): Promise<PDFDocument> {
@@ -130,22 +172,54 @@ export class PDFAssembler {
     return this.promiseQueue.add(() => Promise.resolve(this.pdfTree));
   }
 
-  toArrayBuffer(file: BinaryFile): Promise<ArrayBuffer> {
+  async toUint8Array(file: BinaryFile): Promise<Uint8Array> {
+     // If a Uint8Array (or Buffer in Node.js) was provided, return as-is.
+     if (file instanceof Uint8Array) {
+        return file;
+     }
+     // If ArrayBuffer is provided, we need to use the Uint8Array constructor.
+     if (file instanceof ArrayBuffer) {
+        return new Uint8Array(file);
+     }
+     if (file instanceof Blob) {
+        return blobToUint8Array(file);
+     }
+     const typedArrays = [
+        Int8Array, Int16Array, Uint16Array, Int32Array,
+        Uint32Array, Uint8ClampedArray, Float32Array, Float64Array
+     ];
+     // If a TypedArray was provided, use Uint8Array.from to convert, otherwise
+     // return an empty UintArray.
+     return typedArrays.some(typedArray => file instanceof typedArray) ? 
+            Uint8Array.from(file as TypedArray) :
+            new Uint8Array(0);
+  }
+
+  async toArrayBuffer(file: BinaryFile): Promise<ArrayBuffer> {
+    if (file instanceof ArrayBuffer) {
+       return file;
+    }
+    if (file instanceof Blob) {
+      return new Promise((resolve, reject) => {
+         const fileReader = new FileReader();
+         fileReader.onload = () => resolve(fileReader.result as ArrayBuffer);
+         fileReader.onerror = () => reject(fileReader.error);
+         fileReader.readAsArrayBuffer(file as Blob);
+       })
+    }
     const typedArrays = [
       Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array,
       Uint32Array, Uint8ClampedArray, Float32Array, Float64Array
     ];
-    return file instanceof ArrayBuffer ? Promise.resolve(file) :
-      typedArrays.some(typedArray => file instanceof typedArray) ?
-        Promise.resolve(<ArrayBuffer>(<TypedArray>file).buffer) :
-      file instanceof Blob ?
-        new Promise((resolve, reject) => {
-          const fileReader = new FileReader();
-          fileReader.onload = () => resolve(fileReader.result);
-          fileReader.onerror = () => reject(fileReader.error);
-          fileReader.readAsArrayBuffer(<Blob>file);
-        }) :
-        Promise.resolve(new ArrayBuffer(0));
+    if (typedArrays.some(typedArray => file instanceof typedArray)) {
+       let typedArray = file as TypedArray;
+       let backingArrayBuffer = typedArray.buffer;
+       let arrayBuffer = typedArray.byteLength !== backingArrayBuffer.byteLength ? 
+                         backingArrayBuffer.slice(typedArray.byteOffset, typedArray.byteOffset + typedArray.byteLength) :
+                         backingArrayBuffer;
+       return arrayBuffer;
+    }
+    return new ArrayBuffer(0);
   }
 
   resolveNodeRefs(
