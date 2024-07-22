@@ -20,6 +20,11 @@ import { arraysToBytes, bytesToString, stringToBytes } from 'pdfjs-dist/lib/shar
 import { deflate } from 'pako';
 import * as queue from 'promise-queue';
 
+function uintArrayToHexString (arr: Uint8Array | Uint16Array | Uint32Array) {
+   let hexValues = Array.from(arr, value => value.toString(16).padStart(2, "0"));
+   return hexValues.join("").toUpperCase();
+}
+
 export type TypedArray = Int8Array | Uint8Array | Int16Array | Uint16Array |
   Int32Array | Uint32Array | Uint8ClampedArray | Float32Array | Float64Array;
 
