@@ -119,12 +119,8 @@ export class PDFAssembler {
 
     // Otherwise, get the data into a usable format and use PDF.js to parse it.
     let handlePDF = async (inputData) => {
-      // The ArrayBuffer backing for Buffer on Node.js can actually contain more data than expected
-      // (see https://nodejs.org/api/buffer.html#buffer_buf_byteoffset), so using this is not advisable.
-      // Although the PDF.js interfaces make reference to arrayBuffer, it actually converts to Uint8, so
-      // so it seems sensible to use Uint8 instead.
-      let uintArray = await this.toUint8Array(inputData as Blob | ArrayBuffer | Uint8Array);
-      this.pdfManager = new LocalPdfManager(1, uintArray, userPassword, {}, '');
+      let arrayBuffer = await this.toArrayBuffer(inputData as Blob | ArrayBuffer | Uint8Array);
+      this.pdfManager = new LocalPdfManager(1, arrayBuffer, userPassword, {}, '');
       await this.pdfManager.ensureDoc('checkHeader', []);
       await this.pdfManager.ensureDoc('parseStartXRef', []);
       await this.pdfManager.ensureDoc('parse', [this.recoveryMode]);
