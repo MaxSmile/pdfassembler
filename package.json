@@ -28,7 +28,7 @@
   },
   "dependencies": {
     "pako": "^2.1.0",
-    "pdfjs-dist": "^2.0.489",
+    "pdfjs-dist": "2.9.359",
     "promise-queue": "^2.2.5"
   },
   "devDependencies": {
